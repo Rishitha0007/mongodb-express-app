@@ -1,3 +1,4 @@
+
 import express from 'express';
 import { MongoClient, ObjectId } from 'mongodb';
 
@@ -5,187 +6,191 @@ const app = express();
 
 app.use(express.json());
 
-// UPDATED: Using IPv4 address explicitly to resolve the local connection issue
-const url = "mongodb://127.0.0.1:27017";
-const client = new MongoClient(url);
+const client = new MongoClient(process.env.MONGODB_URI);
 
-const dbName = "booksdb"; 
+const clientPromise = client.connect();
 
-let db;
+const dbName = process.env.DB_NAME || 'booksdb';
 
-// Start listening ONLY after MongoDB successfully connects
-client.connect()
-    .then(() => {
-        console.log("Connected to Mongo DB");
-        db = client.db(dbName);
+async function getBooksCollection() {
+    const connectedClient = await clientPromise;
+    const db = connectedClient.db(dbName);
+    return db.collection('books');
+}
 
-        // Run the server here so 'db' is ready when a request arrives
-        app.listen(5000, () => {
-            console.log("App running on http://localhost:5000");
-        });
-    })
-    .catch((err) => {
-        console.log("problem in connection MongoDB", err);
-        process.exit(1); // Stop the server if it can't connect to the DB
+// Home route
+app.get('/', (req, res) => {
+    res.json({
+        message: 'Books API is running successfully!'
     });
-
-
-// CRUD
-
-// Create - POST
-app.post("/api/v1/books", (req, res) => {
-    const newBook = req.body;
-
-    db.collection("books").insertOne(newBook)
-        .then((result) => {
-            res.status(201).json({
-                message: "Book Created Successfully",
-                data: {
-                    _id: result.insertedId,
-                    ...newBook
-                }
-            });
-        })
-        .catch((err) => {
-            console.log(err);
-            res.status(500).json({
-                message: "Internal Server Error",
-                error: err.message
-            });
-        });
 });
 
+// CREATE BOOK
+app.post('/api/v1/books', async (req, res) => {
+    try {
+        const collection = await getBooksCollection();
 
-// READ
-app.get("/api/v1/books", (req, res) => {
-    const { category } = req.query;
-    const query = category ? { category: category } : {};
+        const newBook = req.body;
 
-    db.collection("books")
-        .find(query)
-        .toArray()
-        .then((result) => {
-            res.status(200).json({
-                message: "Books retrieved successfully",
-                data: result
-            });
-        })
-        .catch((err) => {
-            console.log(err);
-            res.status(500).json({
-                message: "Internal Server Error",
-                error: err.message
-            });
-        });
-});
+        const result = await collection.insertOne(newBook);
 
-
-// READ by id
-app.get("/api/v1/books/:id", (req, res) => {
-    const { id } = req.params;
-
-    db.collection("books")
-        .findOne({
-            _id: new ObjectId(id)
-        })
-        .then((result) => {
-            if (result) {
-                res.status(200).json({
-                    message: "Book retrieved successfully",
-                    data: result
-                });
-            } else {
-                const error = new Error("Book not found");
-                error.status = 404;
-                throw error;
+        res.status(201).json({
+            message: 'Book Created Successfully',
+            data: {
+                _id: result.insertedId,
+                ...newBook
             }
-        })
-        .catch((err) => {
-            const status = err.status || 500;
-            const message = err.message || "Internal Server Error";
-            res.status(status).json({
-                message: message
-            });
         });
+
+    } catch (err) {
+        res.status(500).json({
+            message: 'Internal Server Error',
+            error: err.message
+        });
+    }
 });
 
+// READ ALL BOOKS
+app.get('/api/v1/books', async (req, res) => {
+    try {
+        const collection = await getBooksCollection();
 
-// Update books by id
-app.put("/api/v1/books/:id", (req, res) => {
-    const { id } = req.params;
-    const updatedBook = req.body;
+        const { category } = req.query;
 
-    db.collection("books")
-        .updateOne(
+        const query = category ? { category } : {};
+
+        const result = await collection.find(query).toArray();
+
+        res.status(200).json({
+            message: 'Books retrieved successfully',
+            data: result
+        });
+
+    } catch (err) {
+        res.status(500).json({
+            message: 'Internal Server Error',
+            error: err.message
+        });
+    }
+});
+
+// READ BOOK BY ID
+app.get('/api/v1/books/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        if (!ObjectId.isValid(id)) {
+            return res.status(400).json({
+                message: 'Invalid Book ID'
+            });
+        }
+
+        const collection = await getBooksCollection();
+
+        const result = await collection.findOne({
+            _id: new ObjectId(id)
+        });
+
+        if (!result) {
+            return res.status(404).json({
+                message: 'Book not found'
+            });
+        }
+
+        res.status(200).json({
+            message: 'Book retrieved successfully',
+            data: result
+        });
+
+    } catch (err) {
+        res.status(500).json({
+            message: 'Internal Server Error',
+            error: err.message
+        });
+    }
+});
+
+// UPDATE BOOK
+app.put('/api/v1/books/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        if (!ObjectId.isValid(id)) {
+            return res.status(400).json({
+                message: 'Invalid Book ID'
+            });
+        }
+
+        const collection = await getBooksCollection();
+
+        const updatedBook = req.body;
+
+        const result = await collection.findOneAndUpdate(
             { _id: new ObjectId(id) },
-            { $set: updatedBook }
-        )
-        .then((result) => {
-            if (result.matchedCount === 1) {
-                res.status(200).json({
-                    data: {
-                        _id: new ObjectId(id),
-                        ...updatedBook
-                    }
-                });
-            } else {
-                const error = new Error("Book not found");
-                error.status = 404;
-                throw error;
-            }
-        })
-        .catch((err) => {
-            const status = err.status || 500;
-            const message = err.message || "Internal Server Error";
-            res.status(status).json({
-                message: message
+            { $set: updatedBook },
+            { returnDocument: 'after' }
+        );
+
+        if (!result) {
+            return res.status(404).json({
+                message: 'Book not found'
             });
+        }
+
+        res.status(200).json({
+            message: 'Book updated successfully',
+            data: result
         });
+
+    } catch (err) {
+        res.status(500).json({
+            message: 'Internal Server Error',
+            error: err.message
+        });
+    }
 });
 
+// DELETE BOOK
+app.delete('/api/v1/books/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
 
-// Delete Book by id
-app.delete("/api/v1/books/:id", (req, res) => {
-    const { id } = req.params;
+        if (!ObjectId.isValid(id)) {
+            return res.status(400).json({
+                message: 'Invalid Book ID'
+            });
+        }
 
-    db.collection("books")
-        .deleteOne({
+        const collection = await getBooksCollection();
+
+        const result = await collection.deleteOne({
             _id: new ObjectId(id)
-        })
-        .then((result) => {
-            if (result.deletedCount === 1) {
-                res.status(200).json({
-                    message: "Book deleted successfully"
-                });
-            } else {
-                const error = new Error("Book not found");
-                error.status = 404;
-                throw error;
-            }
-        })
-        .catch((err) => {
-            const status = err.status || 500;
-            const message = err.message || "Internal Server Error";
-            res.status(status).json({
-                message: message
-            });
         });
+
+        if (result.deletedCount === 0) {
+            return res.status(404).json({
+                message: 'Book not found'
+            });
+        }
+
+        res.status(200).json({
+            message: 'Book deleted successfully'
+        });
+
+    } catch (err) {
+        res.status(500).json({
+            message: 'Internal Server Error',
+            error: err.message
+        });
+    }
 });
 
-
-// 404 middleware
+// 404 ROUTE
 app.use((req, res) => {
     res.status(404).json({
-        message: "Route Not Found"
+        message: 'Route Not Found'
     });
 });
 
-
-// Error handling
-app.use((err, req, res, next) => {
-    const status = err.status || 500;
-    const message = err.message || "Internal Server Error";
-    res.status(status).json({
-        message: message
-    });
-});
+// IMPORTANT: Export app for Vercel
+export default app;
